@@ -1,0 +1,175 @@
+[
+  {
+    "concurrency": 1,
+    "total_requests": 20,
+    "successful_requests": 15,
+    "failed_requests": 5,
+    "total_duration_sec": 211.53919258297537,
+    "rps": 0.07090884585898337,
+    "input_tokens_per_sec": 3.9472590861500745,
+    "output_tokens_per_sec": 2.34471916973705,
+    "total_tokens_per_sec": 6.291978255887125,
+    "latency_p50": 2.0456916250113863,
+    "latency_p90": 10.748867349594365,
+    "latency_p95": 12.375065478601027,
+    "latency_p99": 12.913787462117615,
+    "latency_mean": 4.101970699864129,
+    "latency_min": 0.8761239169980399,
+    "latency_max": 13.048467957996763,
+    "errors_breakdown": {
+      "Timeout Error (>30s)": 5
+    }
+  },
+  {
+    "concurrency": 5,
+    "total_requests": 20,
+    "successful_requests": 16,
+    "failed_requests": 4,
+    "total_duration_sec": 57.42513362498721,
+    "rps": 0.27862364421278374,
+    "input_tokens_per_sec": 15.25464452064991,
+    "output_tokens_per_sec": 96.45602283091307,
+    "total_tokens_per_sec": 111.71066735156298,
+    "latency_p50": 1.931785332984873,
+    "latency_p90": 19.476840646500932,
+    "latency_p95": 26.36240907350293,
+    "latency_p99": 28.21402914828941,
+    "latency_mean": 6.7994459479959914,
+    "latency_min": 0.8512653329817113,
+    "latency_max": 28.67693416698603,
+    "errors_breakdown": {
+      "HTTP 429 Resource Exhausted (Quota/Rate Limit)": 1,
+      "Timeout Error (>30s)": 3
+    }
+  },
+  {
+    "concurrency": 10,
+    "total_requests": 20,
+    "successful_requests": 18,
+    "failed_requests": 2,
+    "total_duration_sec": 33.17088937500375,
+    "rps": 0.5426444795165509,
+    "input_tokens_per_sec": 28.880745076491987,
+    "output_tokens_per_sec": 284.91849866171793,
+    "total_tokens_per_sec": 313.7992437382099,
+    "latency_p50": 3.2167286454932764,
+    "latency_p90": 27.54029572919244,
+    "latency_p95": 27.87625972229434,
+    "latency_p99": 29.378160110863682,
+    "latency_mean": 7.134715111049849,
+    "latency_min": 0.985006707982393,
+    "latency_max": 29.753635208006017,
+    "errors_breakdown": {
+      "Timeout Error (>30s)": 2
+    }
+  },
+  {
+    "concurrency": 20,
+    "total_requests": 20,
+    "successful_requests": 12,
+    "failed_requests": 8,
+    "total_duration_sec": 30.010554625012446,
+    "rps": 0.3998593211602474,
+    "input_tokens_per_sec": 22.725338085940727,
+    "output_tokens_per_sec": 22.725338085940727,
+    "total_tokens_per_sec": 45.450676171881454,
+    "latency_p50": 3.668943749507889,
+    "latency_p90": 7.077654650007025,
+    "latency_p95": 7.372892193615552,
+    "latency_p99": 7.576299005142064,
+    "latency_mean": 3.8990856040060557,
+    "latency_min": 1.380847166001331,
+    "latency_max": 7.6271507080236915,
+    "errors_breakdown": {
+      "HTTP 429 Resource Exhausted (Quota/Rate Limit)": 4,
+      "Timeout Error (>30s)": 4
+    }
+  },
+  {
+    "concurrency": 30,
+    "total_requests": 30,
+    "successful_requests": 24,
+    "failed_requests": 6,
+    "total_duration_sec": 30.00803487500525,
+    "rps": 0.7997857940371312,
+    "input_tokens_per_sec": 44.5214092014003,
+    "output_tokens_per_sec": 110.43708839329386,
+    "total_tokens_per_sec": 154.95849759469417,
+    "latency_p50": 2.234249834000366,
+    "latency_p90": 9.622314970399017,
+    "latency_p95": 13.140156401750568,
+    "latency_p99": 25.11553988533123,
+    "latency_mean": 4.714494734331917,
+    "latency_min": 1.2366202500124928,
+    "latency_max": 28.578601249988424,
+    "errors_breakdown": {
+      "Timeout Error (>30s)": 6
+    }
+  },
+  {
+    "concurrency": 50,
+    "total_requests": 50,
+    "successful_requests": 33,
+    "failed_requests": 17,
+    "total_duration_sec": 30.016067792021204,
+    "rps": 1.0994111630029026,
+    "input_tokens_per_sec": 60.73413788346338,
+    "output_tokens_per_sec": 207.32229295051707,
+    "total_tokens_per_sec": 268.05643083398047,
+    "latency_p50": 6.32304912499967,
+    "latency_p90": 12.689425574988128,
+    "latency_p95": 18.971202574606266,
+    "latency_p99": 28.959707924994873,
+    "latency_mean": 7.390123085873766,
+    "latency_min": 2.1019847079878673,
+    "latency_max": 29.65725012499024,
+    "errors_breakdown": {
+      "HTTP 429 Resource Exhausted (Quota/Rate Limit)": 7,
+      "Timeout Error (>30s)": 10
+    }
+  },
+  {
+    "concurrency": 75,
+    "total_requests": 75,
+    "successful_requests": 59,
+    "failed_requests": 16,
+    "total_duration_sec": 30.022133207996376,
+    "rps": 1.9652167816071573,
+    "input_tokens_per_sec": 107.9203791933422,
+    "output_tokens_per_sec": 433.31364596487305,
+    "total_tokens_per_sec": 541.2340251582152,
+    "latency_p50": 2.127966000000015,
+    "latency_p90": 6.782798557810021,
+    "latency_p95": 28.07572447018465,
+    "latency_p99": 29.828182690919498,
+    "latency_mean": 5.001781933557171,
+    "latency_min": 0.940933292004047,
+    "latency_max": 29.888979959010612,
+    "errors_breakdown": {
+      "HTTP 429 Resource Exhausted (Quota/Rate Limit)": 2,
+      "Timeout Error (>30s)": 14
+    }
+  },
+  {
+    "concurrency": 100,
+    "total_requests": 100,
+    "successful_requests": 74,
+    "failed_requests": 26,
+    "total_duration_sec": 30.023019707994536,
+    "rps": 2.4647753863444746,
+    "input_tokens_per_sec": 134.72995186166756,
+    "output_tokens_per_sec": 496.8853947768496,
+    "total_tokens_per_sec": 631.6153466385172,
+    "latency_p50": 5.2347183954989305,
+    "latency_p90": 13.290191153602791,
+    "latency_p95": 27.4158934578998,
+    "latency_p99": 28.14205733749899,
+    "latency_mean": 6.951548149798622,
+    "latency_min": 1.3832373330078553,
+    "latency_max": 28.1811588749988,
+    "errors_breakdown": {
+      "HTTP 429 Resource Exhausted (Quota/Rate Limit)": 6,
+      "Timeout Error (>30s)": 20
+    }
+  }
+]
