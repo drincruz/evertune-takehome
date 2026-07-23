@@ -1,3 +1,4 @@
+import asyncio
 import os
 import httpx
 import google.auth
@@ -41,18 +42,22 @@ class Gemini(LLM):
             wait=wait_random_exponential(multiplier=1, max=float(os.getenv("GEMINI_BACKOFF_MAX_SECONDS", "20"))),
             reraise=True,
         )
+        self.__token_lock = asyncio.Lock()
 
     def parallelism(self) -> int:
         return int(os.getenv("GEMINI_PARALLELISM", "100"))
 
-    def _get_token(self) -> str:
-        if not self.__credentials.valid:
-            auth_req = google.auth.transport.requests.Request()
-            self.__credentials.refresh(auth_req)
+    async def _get_token(self) -> str:
+        if self.__credentials.valid:
+            return self.__credentials.token
+        async with self.__token_lock:
+            if not self.__credentials.valid:
+                auth_req = google.auth.transport.requests.Request()
+                await asyncio.to_thread(self.__credentials.refresh, auth_req)
         return self.__credentials.token
 
     async def ask_generic_question(self, system_prompt: str, question: str, temperature: float) -> LLM.SimpleResponse:
-        token = self._get_token()
+        token = await self._get_token()
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"

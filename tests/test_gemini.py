@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 import sys
 import os
@@ -12,6 +13,18 @@ from llm.gemini import VertexTransientError
 class FakeCredentials:
     valid = True
     token = "fake-token"
+
+
+class RefreshableFakeCredentials:
+    def __init__(self):
+        self.valid = False
+        self.token = "stale-token"
+        self.refresh_call_count = 0
+
+    def refresh(self, auth_req):
+        self.refresh_call_count += 1
+        self.token = "refreshed-token"
+        self.valid = True
 
 
 def make_response(status_code: int, body: dict | str = ""):
@@ -89,3 +102,37 @@ async def test_retries_exhausted_raises(gemini, monkeypatch):
         )
 
     assert post.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_get_token_refreshes_off_thread_when_invalid(monkeypatch):
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (RefreshableFakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    gemini = Gemini()
+
+    token = await gemini._get_token()
+
+    assert token == "refreshed-token"
+    assert gemini._Gemini__credentials.refresh_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_token_concurrent_callers_share_single_refresh(monkeypatch):
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (RefreshableFakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    gemini = Gemini()
+
+    real_refresh = gemini._Gemini__credentials.refresh
+
+    def slow_refresh(auth_req):
+        # Simulate a slow network call so concurrent callers pile up on the lock.
+        import time
+        time.sleep(0.05)
+        real_refresh(auth_req)
+
+    monkeypatch.setattr(gemini._Gemini__credentials, "refresh", slow_refresh)
+
+    tokens = await asyncio.gather(*(gemini._get_token() for _ in range(10)))
+
+    assert set(tokens) == {"refreshed-token"}
+    assert gemini._Gemini__credentials.refresh_call_count == 1
