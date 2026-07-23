@@ -87,7 +87,7 @@ async def worker(gemini: Gemini, queue: asyncio.Queue, results: List[RequestResu
                     question=item["question"],
                     temperature=0.7
                 ),
-                timeout=30.0
+                timeout=120.0
             )
             elapsed = time.perf_counter() - start_time
             results.append(RequestResult(
@@ -102,7 +102,7 @@ async def worker(gemini: Gemini, queue: asyncio.Queue, results: List[RequestResu
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                 err_category = "HTTP 429 Resource Exhausted (Quota/Rate Limit)"
             elif "TimeoutError" in type(e).__name__ or "timeout" in err_str.lower():
-                err_category = "Timeout Error (>30s)"
+                err_category = "Timeout Error (>120s)"
             else:
                 err_category = f"Error: {type(e).__name__}"
 
