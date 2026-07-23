@@ -6,6 +6,14 @@ This repo contains a small sample of our LLM vendor integration. We'd like you t
 
 You'll need the `gcloud` CLI installed and configured against our project, which we will provide for you.
 
+This project uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
+
+```bash
+uv sync              # install dependencies into .venv
+uv run pytest        # run the test suite
+uv run python load_test.py   # run the load test
+```
+
 # What to build
 
 Implement Gemini 2.5 Flash as a provider in this system, and demonstrably prove it will hold up at production scale. We care about both halves of that sentence: a working integration *and* the evidence that it will not fall over when we point real traffic at it.

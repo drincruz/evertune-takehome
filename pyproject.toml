@@ -1,0 +1,23 @@
+[project]
+name = "evertune-takehome"
+version = "0.1.0"
+description = "Evertune take-home exercise: LLM vendor integration"
+requires-python = ">=3.14"
+dependencies = [
+    "together==2.12.0",
+    "google-genai>=0.1.0",
+    "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio==1.3.0",
+    "mypy",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false
