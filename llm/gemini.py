@@ -91,13 +91,15 @@ class Gemini(LLM):
         response: httpx.Response = await self.__retrying(_send)
 
         data = response.json()
-        
+
         candidates = data.get("candidates", [])
         if not candidates:
             answer = ""
+            finish_reason = data.get("promptFeedback", {}).get("blockReason")
         else:
             parts = candidates[0].get("content", {}).get("parts", [])
             answer = "".join(p.get("text", "") for p in parts)
+            finish_reason = candidates[0].get("finishReason")
 
         usage = data.get("usageMetadata", {})
         input_tokens = usage.get("promptTokenCount", 0)
@@ -106,5 +108,6 @@ class Gemini(LLM):
         return LLM.SimpleResponse(
             answer=answer,
             input_tokens=input_tokens,
-            output_tokens=output_tokens
+            output_tokens=output_tokens,
+            finish_reason=finish_reason
         )

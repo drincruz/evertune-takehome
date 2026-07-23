@@ -105,6 +105,74 @@ async def test_retries_exhausted_raises(gemini, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_finish_reason_stop_on_normal_response(gemini, monkeypatch):
+    post = AsyncMock(return_value=make_response(
+        200, {"candidates": [{"content": {"parts": [{"text": "Paris"}]}, "finishReason": "STOP"}]}
+    ))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    response = await gemini.ask_generic_question(
+        system_prompt="You are a helpful assistant.",
+        question="What is the capital of France?",
+        temperature=0.0,
+    )
+
+    assert response.answer == "Paris"
+    assert response.finish_reason == "STOP"
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_max_tokens_surfaces_truncation(gemini, monkeypatch):
+    post = AsyncMock(return_value=make_response(
+        200, {"candidates": [{"content": {"parts": [{"text": "Par"}]}, "finishReason": "MAX_TOKENS"}]}
+    ))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    response = await gemini.ask_generic_question(
+        system_prompt="You are a helpful assistant.",
+        question="What is the capital of France?",
+        temperature=0.0,
+    )
+
+    assert response.answer == "Par"
+    assert response.finish_reason == "MAX_TOKENS"
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_safety_block_with_empty_parts(gemini, monkeypatch):
+    post = AsyncMock(return_value=make_response(
+        200, {"candidates": [{"content": {"parts": []}, "finishReason": "SAFETY"}]}
+    ))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    response = await gemini.ask_generic_question(
+        system_prompt="You are a helpful assistant.",
+        question="What is the capital of France?",
+        temperature=0.0,
+    )
+
+    assert response.answer == ""
+    assert response.finish_reason == "SAFETY"
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_prompt_blocked_no_candidates(gemini, monkeypatch):
+    post = AsyncMock(return_value=make_response(
+        200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}}
+    ))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    response = await gemini.ask_generic_question(
+        system_prompt="You are a helpful assistant.",
+        question="What is the capital of France?",
+        temperature=0.0,
+    )
+
+    assert response.answer == ""
+    assert response.finish_reason == "SAFETY"
+
+
+@pytest.mark.asyncio
 async def test_get_token_refreshes_off_thread_when_invalid(monkeypatch):
     monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (RefreshableFakeCredentials(), None))
     monkeypatch.setenv("VERTEX_PROJECT", "test-project")
