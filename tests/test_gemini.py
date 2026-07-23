@@ -6,6 +6,12 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + "/.."))
 
 from llm import Gemini, LLM
 
+requires_gcp_credentials = pytest.mark.skipif(
+    os.getenv("CI") == "true",
+    reason="requires live GCP Vertex AI credentials, not available in CI yet",
+)
+
+@requires_gcp_credentials
 @pytest.mark.asyncio
 async def test_gemini_ask_generic_question():
     gemini = Gemini()
@@ -22,6 +28,7 @@ async def test_gemini_ask_generic_question():
     assert response.input_tokens > 0
     assert response.output_tokens > 0
 
+@requires_gcp_credentials
 @pytest.mark.asyncio
 async def test_gemini_custom_parallelism(monkeypatch):
     monkeypatch.setenv("GEMINI_PARALLELISM", "50")

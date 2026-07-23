@@ -5,7 +5,7 @@ import google.auth.transport.requests
 from llm import LLM
 
 class Gemini(LLM):
-    def __init__(self, model_name: str = None, project: str = None, location: str = None):
+    def __init__(self, model_name: str | None = None, project: str | None = None, location: str | None = None):
         self.__model = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.__project = project or os.getenv("VERTEX_PROJECT", "evertune-tests")
         self.__location = location or os.getenv("VERTEX_LOCATION", "us-central1")

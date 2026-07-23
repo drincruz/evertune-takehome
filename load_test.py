@@ -117,7 +117,7 @@ async def worker(gemini: Gemini, queue: asyncio.Queue, results: List[RequestResu
             queue.task_done()
 
 async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) -> ScenarioResult:
-    queue = asyncio.Queue()
+    queue: asyncio.Queue[Dict[str, str]] = asyncio.Queue()
     
     for i in range(total_requests):
         prompt = SAMPLE_PROMPTS[i % len(SAMPLE_PROMPTS)]
