@@ -3,6 +3,7 @@ import logging
 import pytest
 import sys
 import os
+import httpx
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + "/.."))
@@ -80,6 +81,7 @@ async def test_retries_on_429_then_succeeds(gemini, monkeypatch, caplog):
         )
 
     assert response.answer == "Paris"
+    assert response.attempt_number == 2
     assert post.call_count == 2
     assert any(record.levelno == logging.WARNING and "retrying" in record.message.lower() for record in caplog.records)
 
@@ -98,6 +100,7 @@ async def test_no_retry_on_non_retryable_status(gemini, monkeypatch, caplog):
             )
 
     assert not isinstance(exc_info.value, VertexTransientError)
+    assert exc_info.value.attempt_number == 1
     assert post.call_count == 1
     assert any(
         record.levelno == logging.ERROR and getattr(record, "status_code", None) == 400
@@ -110,7 +113,7 @@ async def test_retries_exhausted_raises(gemini, monkeypatch):
     post = AsyncMock(return_value=make_response(429, "quota exceeded"))
     monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
 
-    with pytest.raises(VertexTransientError):
+    with pytest.raises(VertexTransientError) as exc_info:
         await gemini.ask_generic_question(
             system_prompt="You are a helpful assistant.",
             question="What is the capital of France?",
@@ -118,6 +121,7 @@ async def test_retries_exhausted_raises(gemini, monkeypatch):
         )
 
     assert post.call_count == 3
+    assert exc_info.value.attempt_number == 3
 
 
 @pytest.mark.asyncio
@@ -135,6 +139,28 @@ async def test_finish_reason_stop_on_normal_response(gemini, monkeypatch):
 
     assert response.answer == "Paris"
     assert response.finish_reason == "STOP"
+    assert response.attempt_number == 1
+
+
+@pytest.mark.asyncio
+async def test_retries_on_transport_error_then_succeeds(gemini, monkeypatch, caplog):
+    responses = [
+        httpx.ConnectError("connection refused"),
+        make_response(200, {"candidates": [{"content": {"parts": [{"text": "Paris"}]}}]}),
+    ]
+    post = AsyncMock(side_effect=responses)
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    with caplog.at_level(logging.WARNING, logger="llm.gemini"):
+        response = await gemini.ask_generic_question(
+            system_prompt="You are a helpful assistant.",
+            question="What is the capital of France?",
+            temperature=0.0,
+        )
+
+    assert response.answer == "Paris"
+    assert response.attempt_number == 2
+    assert post.call_count == 2
 
 
 @pytest.mark.asyncio

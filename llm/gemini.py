@@ -6,7 +6,7 @@ import google.auth
 import google.auth.transport.requests
 from tenacity import (
     AsyncRetrying,
-    before_sleep_log,
+    RetryCallState,
     retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
@@ -21,6 +21,20 @@ class VertexTransientError(RuntimeError):
     def __init__(self, status_code: int, body: str):
         super().__init__(f"Vertex AI returned HTTP status {status_code}: {body}")
         self.status_code = status_code
+
+def _log_retry_attempt(retry_state: RetryCallState) -> None:
+    outcome = retry_state.outcome
+    exc = outcome.exception() if outcome is not None and outcome.failed else None
+    status_code = getattr(exc, "status_code", None)
+    sleep_seconds = retry_state.next_action.sleep if retry_state.next_action else 0.0
+    logger.warning(
+        "Retrying Vertex AI request (attempt %d) in %.2fs after %s: %s",
+        retry_state.attempt_number,
+        sleep_seconds,
+        type(exc).__name__ if exc is not None else "unknown error",
+        exc,
+        extra={"attempt_number": retry_state.attempt_number, "status_code": status_code},
+    )
 
 class Gemini(LLM):
     def __init__(self, model_name: str | None = None, project: str | None = None, location: str | None = None):
@@ -51,7 +65,7 @@ class Gemini(LLM):
             stop=stop_after_attempt(int(os.getenv("GEMINI_MAX_RETRIES", "5"))),
             wait=wait_random_exponential(multiplier=1, max=float(os.getenv("GEMINI_BACKOFF_MAX_SECONDS", "20"))),
             reraise=True,
-            before_sleep=before_sleep_log(logger, logging.WARNING),
+            before_sleep=_log_retry_attempt,
         )
         self.__token_lock = asyncio.Lock()
 
@@ -102,8 +116,16 @@ class Gemini(LLM):
                 "parts": [{"text": system_prompt}]
             }
 
+        attempt_count = 0
+
         async def _send() -> httpx.Response:
-            response = await self.__http_client.post(self.__url, headers=headers, json=payload)
+            nonlocal attempt_count
+            attempt_count += 1
+            try:
+                response = await self.__http_client.post(self.__url, headers=headers, json=payload)
+            except httpx.TransportError as exc:
+                setattr(exc, "attempt_number", attempt_count)
+                raise
             if response.status_code in RETRYABLE_STATUS_CODES:
                 raise VertexTransientError(response.status_code, response.text)
             if response.status_code != 200:
@@ -115,7 +137,23 @@ class Gemini(LLM):
                 raise RuntimeError(f"Vertex AI returned HTTP status {response.status_code}: {response.text}")
             return response
 
-        response: httpx.Response = await self.__retrying(_send)
+        try:
+            response: httpx.Response = await self.__retrying(_send)
+        except Exception as exc:
+            setattr(exc, "attempt_number", attempt_count)
+            logger.error(
+                "Vertex AI request failed after %d attempt(s): %s",
+                attempt_count,
+                exc,
+                extra={"attempt_number": attempt_count},
+            )
+            raise
+
+        if attempt_count > 1:
+            logger.info(
+                "Vertex AI request succeeded after retrying",
+                extra={"attempt_number": attempt_count},
+            )
 
         data = response.json()
 
@@ -143,5 +181,6 @@ class Gemini(LLM):
             answer=answer,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            finish_reason=finish_reason
+            finish_reason=finish_reason,
+            attempt_number=attempt_count
         )

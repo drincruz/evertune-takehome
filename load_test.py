@@ -38,7 +38,8 @@ class RequestResult:
     input_tokens: int
     output_tokens: int
     error: str = ""
-    status_code: str = ""
+    status_code: int | None = None
+    attempt_number: int | None = None
 
 @dataclass
 class ScenarioResult:
@@ -59,6 +60,19 @@ class ScenarioResult:
     latency_min: float
     latency_max: float
     errors_breakdown: Dict[str, int]
+    single_attempt_requests: int
+    multi_attempt_requests: int
+    single_attempt_latency_p50: float
+    single_attempt_latency_p90: float
+    single_attempt_latency_p95: float
+    single_attempt_latency_p99: float
+    single_attempt_latency_mean: float
+    multi_attempt_latency_p50: float
+    multi_attempt_latency_p90: float
+    multi_attempt_latency_p95: float
+    multi_attempt_latency_p99: float
+    multi_attempt_latency_mean: float
+    attempt_count_breakdown: Dict[str, int]
 
 def calculate_percentile(data: List[float], percentile: float) -> float:
     if not data:
@@ -95,7 +109,8 @@ async def worker(gemini: Gemini, queue: asyncio.Queue, results: List[RequestResu
                 success=True,
                 latency=elapsed,
                 input_tokens=resp.input_tokens,
-                output_tokens=resp.output_tokens
+                output_tokens=resp.output_tokens,
+                attempt_number=resp.attempt_number
             ))
         except Exception as e:
             elapsed = time.perf_counter() - start_time
@@ -107,12 +122,20 @@ async def worker(gemini: Gemini, queue: asyncio.Queue, results: List[RequestResu
             else:
                 err_category = f"Error: {type(e).__name__}"
 
+            # asyncio.wait_for's own 120s timeout (above) cancels
+            # ask_generic_question mid-flight, so a TimeoutError raised here
+            # never passes through Gemini's own exception handling and has
+            # no attempt_number attribute - getattr(..., None) surfaces that
+            # gap honestly rather than guessing how many attempts had
+            # elapsed when the harness gave up.
             results.append(RequestResult(
                 success=False,
                 latency=elapsed,
                 input_tokens=0,
                 output_tokens=0,
-                error=err_category
+                error=err_category,
+                status_code=getattr(e, "status_code", None),
+                attempt_number=getattr(e, "attempt_number", None)
             ))
         finally:
             queue.task_done()
@@ -151,12 +174,26 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
     for r in failed:
         err_key = r.error
         errors_breakdown[err_key] = errors_breakdown.get(err_key, 0) + 1
-        
+
+    # Split successful requests by attempt count to test the hypothesis that
+    # tail latency is silent retries succeeding on a later attempt rather
+    # than a capacity/contention effect: if true, single-attempt latency
+    # should be tight and the tail should concentrate in multi-attempt.
+    single_attempt = [r for r in successful if (r.attempt_number or 1) <= 1]
+    multi_attempt = [r for r in successful if (r.attempt_number or 1) > 1]
+    single_latencies = [r.latency for r in single_attempt]
+    multi_latencies = [r.latency for r in multi_attempt]
+
+    attempt_count_breakdown: Dict[str, int] = {}
+    for r in results:
+        key = str(r.attempt_number) if r.attempt_number is not None else "unknown"
+        attempt_count_breakdown[key] = attempt_count_breakdown.get(key, 0) + 1
+
     rps = len(successful) / duration if duration > 0 else 0
     in_tps = total_input / duration if duration > 0 else 0
     out_tps = total_output / duration if duration > 0 else 0
     tot_tps = (total_input + total_output) / duration if duration > 0 else 0
-    
+
     res = ScenarioResult(
         concurrency=concurrency,
         total_requests=total_requests,
@@ -174,10 +211,24 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
         latency_mean=statistics.mean(latencies) if latencies else 0.0,
         latency_min=min(latencies) if latencies else 0.0,
         latency_max=max(latencies) if latencies else 0.0,
-        errors_breakdown=errors_breakdown
+        errors_breakdown=errors_breakdown,
+        single_attempt_requests=len(single_attempt),
+        multi_attempt_requests=len(multi_attempt),
+        single_attempt_latency_p50=calculate_percentile(single_latencies, 50),
+        single_attempt_latency_p90=calculate_percentile(single_latencies, 90),
+        single_attempt_latency_p95=calculate_percentile(single_latencies, 95),
+        single_attempt_latency_p99=calculate_percentile(single_latencies, 99),
+        single_attempt_latency_mean=statistics.mean(single_latencies) if single_latencies else 0.0,
+        multi_attempt_latency_p50=calculate_percentile(multi_latencies, 50),
+        multi_attempt_latency_p90=calculate_percentile(multi_latencies, 90),
+        multi_attempt_latency_p95=calculate_percentile(multi_latencies, 95),
+        multi_attempt_latency_p99=calculate_percentile(multi_latencies, 99),
+        multi_attempt_latency_mean=statistics.mean(multi_latencies) if multi_latencies else 0.0,
+        attempt_count_breakdown=attempt_count_breakdown
     )
-    
+
     print(f"Result: Concurrency={concurrency:3d} | Reqs={total_requests:3d} | Success={len(successful):3d} | Fail={len(failed):3d} | Dur={duration:6.2f}s | RPS={rps:6.2f} | p50={res.latency_p50:5.2f}s | p95={res.latency_p95:5.2f}s | p99={res.latency_p99:5.2f}s", flush=True)
+    print(f"  Attempts: single={len(single_attempt):3d} (p50={res.single_attempt_latency_p50:5.2f}s) | multi={len(multi_attempt):3d} (p50={res.multi_attempt_latency_p50:5.2f}s) | breakdown={attempt_count_breakdown}", flush=True)
     if failed:
         print(f"  Failures breakdown: {errors_breakdown}", flush=True)
     print(flush=True)

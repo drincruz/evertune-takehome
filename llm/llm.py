@@ -7,6 +7,7 @@ class LLM:
         input_tokens: int
         output_tokens: int
         finish_reason: str | None = None
+        attempt_number: int = 1
 
     async def ask_generic_question(self, system_prompt: str, question: str, temperature: float) -> SimpleResponse:
         raise NotImplementedError()
