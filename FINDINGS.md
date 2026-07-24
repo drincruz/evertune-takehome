@@ -14,7 +14,7 @@ to the sweep's max for this run so it doesn't mask the test.
 
 ## Results
 
-**Zero failures at every concurrency level tested, 1 through 300** — 1,120
+**Zero failures at every concurrency level tested, 1 through 300** — 985
 requests total, all successful. The sweep was extended past the
 originally-tested ceiling of 100 up to 300 (3x) specifically to find where
 this breaks; it didn't, within this range.
@@ -86,7 +86,7 @@ Every request in this run reports how many attempts it took (via an
 `load_test_results.json` as `attempt_count_breakdown`, plus separate latency
 percentiles for single-attempt vs. multi-attempt requests.
 
-Across all 1,120 requests spanning concurrency 1-300: **one single retry
+Across all 985 requests spanning concurrency 1-300: **one single retry
 fired**, at concurrency=75 (`attempt_count_breakdown: {"1": 74, "2": 1}`).
 That one request succeeded on its second attempt in 10.46s total — well
 inside the fast half of the latency distribution, not the ~30s tail. Every
