@@ -40,6 +40,7 @@ class RequestResult:
     error: str = ""
     status_code: int | None = None
     attempt_number: int | None = None
+    started_at: float = 0.0
 
 @dataclass
 class ScenarioResult:
@@ -87,58 +88,71 @@ def calculate_percentile(data: List[float], percentile: float) -> float:
     d1 = sorted_data[int(c)] * (k - f)
     return d0 + d1
 
+async def _execute_request(gemini: Gemini, prompt: Dict[str, str]) -> RequestResult:
+    start_time = time.perf_counter()
+    try:
+        resp = await asyncio.wait_for(
+            gemini.ask_generic_question(
+                system_prompt=prompt["system"],
+                question=prompt["question"],
+                temperature=0.7
+            ),
+            timeout=120.0
+        )
+        elapsed = time.perf_counter() - start_time
+        return RequestResult(
+            success=True,
+            latency=elapsed,
+            input_tokens=resp.input_tokens,
+            output_tokens=resp.output_tokens,
+            attempt_number=resp.attempt_number
+        )
+    except Exception as e:
+        elapsed = time.perf_counter() - start_time
+        err_str = str(e)
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            err_category = "HTTP 429 Resource Exhausted (Quota/Rate Limit)"
+        elif "TimeoutError" in type(e).__name__ or "timeout" in err_str.lower():
+            err_category = "Timeout Error (>120s)"
+        else:
+            err_category = f"Error: {type(e).__name__}"
+
+        # asyncio.wait_for's own 120s timeout (above) cancels
+        # ask_generic_question mid-flight, so a TimeoutError raised here
+        # never passes through Gemini's own exception handling and has
+        # no attempt_number attribute - getattr(..., None) surfaces that
+        # gap honestly rather than guessing how many attempts had
+        # elapsed when the harness gave up.
+        return RequestResult(
+            success=False,
+            latency=elapsed,
+            input_tokens=0,
+            output_tokens=0,
+            error=err_category,
+            status_code=getattr(e, "status_code", None),
+            attempt_number=getattr(e, "attempt_number", None)
+        )
+
 async def worker(gemini: Gemini, queue: asyncio.Queue, results: List[RequestResult]):
     while not queue.empty():
         try:
             item = queue.get_nowait()
         except asyncio.QueueEmpty:
             break
+        results.append(await _execute_request(gemini, item))
+        queue.task_done()
 
-        start_time = time.perf_counter()
-        try:
-            resp = await asyncio.wait_for(
-                gemini.ask_generic_question(
-                    system_prompt=item["system"],
-                    question=item["question"],
-                    temperature=0.7
-                ),
-                timeout=120.0
-            )
-            elapsed = time.perf_counter() - start_time
-            results.append(RequestResult(
-                success=True,
-                latency=elapsed,
-                input_tokens=resp.input_tokens,
-                output_tokens=resp.output_tokens,
-                attempt_number=resp.attempt_number
-            ))
-        except Exception as e:
-            elapsed = time.perf_counter() - start_time
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                err_category = "HTTP 429 Resource Exhausted (Quota/Rate Limit)"
-            elif "TimeoutError" in type(e).__name__ or "timeout" in err_str.lower():
-                err_category = "Timeout Error (>120s)"
-            else:
-                err_category = f"Error: {type(e).__name__}"
-
-            # asyncio.wait_for's own 120s timeout (above) cancels
-            # ask_generic_question mid-flight, so a TimeoutError raised here
-            # never passes through Gemini's own exception handling and has
-            # no attempt_number attribute - getattr(..., None) surfaces that
-            # gap honestly rather than guessing how many attempts had
-            # elapsed when the harness gave up.
-            results.append(RequestResult(
-                success=False,
-                latency=elapsed,
-                input_tokens=0,
-                output_tokens=0,
-                error=err_category,
-                status_code=getattr(e, "status_code", None),
-                attempt_number=getattr(e, "attempt_number", None)
-            ))
-        finally:
-            queue.task_done()
+async def sustained_worker(
+    gemini: Gemini, worker_id: int, deadline: float, run_start: float, results: List[RequestResult]
+) -> None:
+    i = worker_id
+    while time.perf_counter() < deadline:
+        prompt = SAMPLE_PROMPTS[i % len(SAMPLE_PROMPTS)]
+        i += 1
+        req_start = time.perf_counter()
+        result = await _execute_request(gemini, prompt)
+        result.started_at = req_start - run_start
+        results.append(result)
 
 async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) -> ScenarioResult:
     queue: asyncio.Queue[Dict[str, str]] = asyncio.Queue()
@@ -162,14 +176,26 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
         w.cancel()
         
     duration = time.perf_counter() - start_wall
-    
+
+    res = summarize_results(results, duration, concurrency, total_requests)
+
+    print(f"Result: Concurrency={concurrency:3d} | Reqs={total_requests:3d} | Success={res.successful_requests:3d} | Fail={res.failed_requests:3d} | Dur={duration:6.2f}s | RPS={res.rps:6.2f} | p50={res.latency_p50:5.2f}s | p95={res.latency_p95:5.2f}s | p99={res.latency_p99:5.2f}s", flush=True)
+    print(f"  Attempts: single={res.single_attempt_requests:3d} (p50={res.single_attempt_latency_p50:5.2f}s) | multi={res.multi_attempt_requests:3d} (p50={res.multi_attempt_latency_p50:5.2f}s) | breakdown={res.attempt_count_breakdown}", flush=True)
+    if res.errors_breakdown:
+        print(f"  Failures breakdown: {res.errors_breakdown}", flush=True)
+    print(flush=True)
+    return res
+
+def summarize_results(
+    results: List[RequestResult], duration: float, concurrency: int, total_requests: int
+) -> ScenarioResult:
     successful = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
-    
+
     latencies = [r.latency for r in successful]
     total_input = sum(r.input_tokens for r in successful)
     total_output = sum(r.output_tokens for r in successful)
-    
+
     errors_breakdown: Dict[str, int] = {}
     for r in failed:
         err_key = r.error
@@ -194,7 +220,7 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
     out_tps = total_output / duration if duration > 0 else 0
     tot_tps = (total_input + total_output) / duration if duration > 0 else 0
 
-    res = ScenarioResult(
+    return ScenarioResult(
         concurrency=concurrency,
         total_requests=total_requests,
         successful_requests=len(successful),
@@ -227,15 +253,105 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
         attempt_count_breakdown=attempt_count_breakdown
     )
 
-    print(f"Result: Concurrency={concurrency:3d} | Reqs={total_requests:3d} | Success={len(successful):3d} | Fail={len(failed):3d} | Dur={duration:6.2f}s | RPS={rps:6.2f} | p50={res.latency_p50:5.2f}s | p95={res.latency_p95:5.2f}s | p99={res.latency_p99:5.2f}s", flush=True)
-    print(f"  Attempts: single={len(single_attempt):3d} (p50={res.single_attempt_latency_p50:5.2f}s) | multi={len(multi_attempt):3d} (p50={res.multi_attempt_latency_p50:5.2f}s) | breakdown={attempt_count_breakdown}", flush=True)
-    if failed:
-        print(f"  Failures breakdown: {errors_breakdown}", flush=True)
+async def run_sustained(gemini: Gemini, concurrency: int, duration_sec: float, bucket_sec: float) -> Dict[str, Any]:
+    print(
+        f"--- Running Sustained Load Test: Concurrency={concurrency}, "
+        f"Duration={duration_sec:.0f}s, Bucket={bucket_sec:.0f}s ---",
+        flush=True
+    )
+    results: List[RequestResult] = []
+    run_start = time.perf_counter()
+    deadline = run_start + duration_sec
+    out_path = "sustained_load_test_results.json"
+
+    reporter = asyncio.create_task(
+        _sustained_progress_reporter(results, run_start, concurrency, bucket_sec, deadline, out_path)
+    )
+    workers = [
+        asyncio.create_task(sustained_worker(gemini, i, deadline, run_start, results))
+        for i in range(concurrency)
+    ]
+    await asyncio.gather(*workers)
+    reporter.cancel()
+
+    total_duration = time.perf_counter() - run_start
+    output = _write_sustained_snapshot(results, concurrency, bucket_sec, total_duration, out_path)
+
+    overall = output["overall"]
     print(flush=True)
-    return res
+    print(f"=== Sustained run complete: {len(results)} requests over {total_duration:.0f}s at concurrency={concurrency} ===", flush=True)
+    print(
+        f"Overall: Success={overall['successful_requests']} | Fail={overall['failed_requests']} | "
+        f"RPS={overall['rps']:.2f} | p50={overall['latency_p50']:.2f}s | p95={overall['latency_p95']:.2f}s | "
+        f"p99={overall['latency_p99']:.2f}s",
+        flush=True
+    )
+    if overall["errors_breakdown"]:
+        print(f"Overall failures breakdown: {overall['errors_breakdown']}", flush=True)
+    return output
+
+def _write_sustained_snapshot(
+    results: List[RequestResult], concurrency: int, bucket_sec: float, elapsed: float, path: str
+) -> Dict[str, Any]:
+    num_buckets = max(1, math.ceil(elapsed / bucket_sec))
+    buckets = []
+    for b in range(num_buckets):
+        lo, hi = b * bucket_sec, (b + 1) * bucket_sec
+        bucket_results = [r for r in results if lo <= r.started_at < hi]
+        if not bucket_results:
+            continue
+        bucket_duration = min(hi, elapsed) - lo
+        buckets.append(summarize_results(bucket_results, bucket_duration, concurrency, len(bucket_results)))
+
+    overall = summarize_results(results, elapsed, concurrency, len(results))
+    output = {
+        "concurrency": concurrency,
+        "duration_sec": elapsed,
+        "bucket_sec": bucket_sec,
+        "overall": asdict(overall),
+        "buckets": [asdict(b) for b in buckets],
+    }
+    with open(path, "w") as f:
+        json.dump(output, f, indent=2)
+    return output
+
+async def _sustained_progress_reporter(
+    results: List[RequestResult], run_start: float, concurrency: int, bucket_sec: float, deadline: float, path: str
+) -> None:
+    # Runs alongside the worker pool for the duration of the sustained run,
+    # snapshotting bucketed results to disk periodically so a long run
+    # (minutes, not seconds) doesn't lose everything if it's interrupted.
+    while time.perf_counter() < deadline:
+        await asyncio.sleep(bucket_sec)
+        elapsed = time.perf_counter() - run_start
+        output = _write_sustained_snapshot(results, concurrency, bucket_sec, elapsed, path)
+        if output["buckets"]:
+            latest = output["buckets"][-1]
+            print(
+                f"  [{elapsed:6.0f}s elapsed] latest bucket: reqs={latest['total_requests']:4d} "
+                f"rps={latest['rps']:6.2f} p50={latest['latency_p50']:5.2f}s p95={latest['latency_p95']:5.2f}s "
+                f"fail={latest['failed_requests']:3d}",
+                flush=True
+            )
 
 async def main():
     configure_logging()
+
+    if len(sys.argv) > 1 and sys.argv[1] == "sustained":
+        concurrency = int(os.getenv("SUSTAINED_CONCURRENCY", "200"))
+        duration_sec = float(os.getenv("SUSTAINED_DURATION_SECONDS", "300"))
+        bucket_sec = float(os.getenv("SUSTAINED_BUCKET_SECONDS", "30"))
+
+        # Same reasoning as the sweep below: the client's self-imposed
+        # concurrency cap defaults to 100 and would silently throttle a
+        # sustained run below the level being tested.
+        os.environ.setdefault("GEMINI_PARALLELISM", str(concurrency))
+
+        async with Gemini() as gemini:
+            await run_sustained(gemini, concurrency, duration_sec, bucket_sec)
+        print("=== Sustained Load Test Complete ===", flush=True)
+        return
+
     concurrency_levels = [1, 5, 10, 20, 30, 50, 75, 100, 150, 200, 300]
 
     # Gemini's own client-side semaphore defaults to GEMINI_PARALLELISM=100

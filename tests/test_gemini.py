@@ -73,6 +73,32 @@ def test_gemini_custom_parallelism(monkeypatch):
     assert gemini.parallelism() == 50
 
 
+def test_warns_when_fd_limit_too_low(monkeypatch, caplog):
+    import resource
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    monkeypatch.setenv("GEMINI_PARALLELISM", "300")
+    monkeypatch.setattr(resource, "getrlimit", lambda res: (256, 4096))
+
+    with caplog.at_level(logging.WARNING, logger="llm.gemini"):
+        Gemini()
+
+    assert any("file descriptor" in record.getMessage() for record in caplog.records)
+
+
+def test_no_warning_when_fd_limit_sufficient(monkeypatch, caplog):
+    import resource
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    monkeypatch.setenv("GEMINI_PARALLELISM", "50")
+    monkeypatch.setattr(resource, "getrlimit", lambda res: (4096, 4096))
+
+    with caplog.at_level(logging.WARNING, logger="llm.gemini"):
+        Gemini()
+
+    assert not any("file descriptor" in record.getMessage() for record in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_semaphore_limits_concurrent_requests(monkeypatch):
     monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))

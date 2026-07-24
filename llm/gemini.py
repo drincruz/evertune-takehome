@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# Headroom for file descriptors the process already holds open (stdio, log
+# handles, etc.) beyond the sockets `parallelism` concurrent requests need.
+_FD_HEADROOM = 50
+
+def _warn_if_fd_limit_too_low(parallelism: int) -> None:
+    try:
+        import resource
+    except ImportError:
+        return
+    soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft_limit < parallelism + _FD_HEADROOM:
+        logger.warning(
+            "Open file descriptor limit (%d) may be too low for the "
+            "configured concurrency (%d): once the process runs out of "
+            "descriptors for new sockets, concurrent Vertex AI requests fail "
+            "with a raw ConnectError instead of a clean HTTP error, which can "
+            "look like a Vertex-side capacity ceiling but isn't. Raise it "
+            "(e.g. `ulimit -n 4096`) before running at this concurrency.",
+            soft_limit,
+            parallelism,
+        )
+
 class VertexTransientError(RuntimeError):
     def __init__(self, status_code: int, body: str):
         super().__init__(f"Vertex AI returned HTTP status {status_code}: {body}")
@@ -66,8 +88,10 @@ class Gemini(LLM):
             f"projects/{self.__project}/locations/{self.__location}/"
             f"publishers/google/models/{self.__model}:generateContent"
         )
+        parallelism = self.parallelism()
+        _warn_if_fd_limit_too_low(parallelism)
         self.__http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_keepalive_connections=200, max_connections=200),
+            limits=httpx.Limits(max_keepalive_connections=parallelism, max_connections=parallelism),
             timeout=60.0
         )
         self.__retrying = AsyncRetrying(
@@ -79,7 +103,7 @@ class Gemini(LLM):
             before_sleep=_log_retry_attempt,
         )
         self.__token_lock = asyncio.Lock()
-        self.__semaphore = asyncio.Semaphore(self.parallelism())
+        self.__semaphore = asyncio.Semaphore(parallelism)
 
     async def aclose(self) -> None:
         await self.__http_client.aclose()
