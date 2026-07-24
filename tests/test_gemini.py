@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + "/.."))
 
 from llm import Gemini
-from llm.gemini import VertexTransientError
+from llm.gemini import VertexAuthError, VertexTransientError
 
 
 class FakeCredentials:
@@ -27,6 +27,15 @@ class RefreshableFakeCredentials:
         self.refresh_call_count += 1
         self.token = "refreshed-token"
         self.valid = True
+
+
+class FailingRefreshFakeCredentials:
+    def __init__(self):
+        self.valid = False
+        self.token = "stale-token"
+
+    def refresh(self, auth_req):
+        raise RuntimeError("revoked service account key")
 
 
 def make_response(status_code: int, body: dict | str = ""):
@@ -62,6 +71,41 @@ def test_gemini_custom_parallelism(monkeypatch):
     monkeypatch.setenv("GEMINI_PARALLELISM", "50")
     gemini = Gemini()
     assert gemini.parallelism() == 50
+
+
+@pytest.mark.asyncio
+async def test_semaphore_limits_concurrent_requests(monkeypatch):
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    monkeypatch.setenv("GEMINI_PARALLELISM", "2")
+    gemini = Gemini()
+
+    in_flight = 0
+    max_in_flight = 0
+    lock = asyncio.Lock()
+
+    async def fake_post(*args, **kwargs):
+        nonlocal in_flight, max_in_flight
+        async with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.05)
+        async with lock:
+            in_flight -= 1
+        return make_response(200, {"candidates": [{"content": {"parts": [{"text": "Paris"}]}}]})
+
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", fake_post)
+
+    await asyncio.gather(*(
+        gemini.ask_generic_question(
+            system_prompt="You are a helpful assistant.",
+            question="What is the capital of France?",
+            temperature=0.0,
+        )
+        for _ in range(10)
+    ))
+
+    assert max_in_flight <= 2
 
 
 @pytest.mark.asyncio
@@ -109,6 +153,43 @@ async def test_no_retry_on_non_retryable_status(gemini, monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
+async def test_401_raises_auth_error_not_generic_runtime_error(gemini, monkeypatch, caplog):
+    post = AsyncMock(return_value=make_response(401, "invalid credentials"))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    with caplog.at_level(logging.ERROR, logger="llm.gemini"):
+        with pytest.raises(VertexAuthError) as exc_info:
+            await gemini.ask_generic_question(
+                system_prompt="You are a helpful assistant.",
+                question="What is the capital of France?",
+                temperature=0.0,
+            )
+
+    assert exc_info.value.status_code == 401
+    assert post.call_count == 1
+    assert any(
+        record.levelno == logging.ERROR and getattr(record, "status_code", None) == 401
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_403_raises_auth_error_distinct_from_generic_bad_request(gemini, monkeypatch):
+    post = AsyncMock(return_value=make_response(403, "permission denied"))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    with pytest.raises(VertexAuthError) as exc_info:
+        await gemini.ask_generic_question(
+            system_prompt="You are a helpful assistant.",
+            question="What is the capital of France?",
+            temperature=0.0,
+        )
+
+    assert not isinstance(exc_info.value, VertexTransientError)
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_retries_exhausted_raises(gemini, monkeypatch):
     post = AsyncMock(return_value=make_response(429, "quota exceeded"))
     monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
@@ -122,6 +203,29 @@ async def test_retries_exhausted_raises(gemini, monkeypatch):
 
     assert post.call_count == 3
     assert exc_info.value.attempt_number == 3
+
+
+@pytest.mark.asyncio
+async def test_request_deadline_cuts_retries_short(monkeypatch):
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "50")
+    monkeypatch.setenv("GEMINI_BACKOFF_MAX_SECONDS", "0.05")
+    monkeypatch.setenv("GEMINI_REQUEST_DEADLINE_SECONDS", "0.1")
+    gemini = Gemini()
+
+    post = AsyncMock(return_value=make_response(429, "quota exceeded"))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    with pytest.raises(VertexTransientError):
+        await gemini.ask_generic_question(
+            system_prompt="You are a helpful assistant.",
+            question="What is the capital of France?",
+            temperature=0.0,
+        )
+
+    # The deadline should stop retries long before GEMINI_MAX_RETRIES is reached.
+    assert post.call_count < 50
 
 
 @pytest.mark.asyncio
@@ -245,6 +349,20 @@ async def test_get_token_refreshes_off_thread_when_invalid(monkeypatch):
 
     assert token == "refreshed-token"
     assert gemini._Gemini__credentials.refresh_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_token_propagates_refresh_failure(monkeypatch):
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FailingRefreshFakeCredentials(), None))
+    monkeypatch.setenv("VERTEX_PROJECT", "test-project")
+    gemini = Gemini()
+
+    with pytest.raises(RuntimeError, match="revoked service account key"):
+        await gemini._get_token()
+
+    # The token lock must be released even after a failed refresh, so a
+    # subsequent caller isn't left deadlocked waiting on it.
+    assert not gemini._Gemini__token_lock.locked()
 
 
 @pytest.mark.asyncio

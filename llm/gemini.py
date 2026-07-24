@@ -9,6 +9,7 @@ from tenacity import (
     RetryCallState,
     retry_if_exception_type,
     stop_after_attempt,
+    stop_after_delay,
     wait_random_exponential,
 )
 from llm import LLM
@@ -21,6 +22,15 @@ class VertexTransientError(RuntimeError):
     def __init__(self, status_code: int, body: str):
         super().__init__(f"Vertex AI returned HTTP status {status_code}: {body}")
         self.status_code = status_code
+
+class VertexAuthError(RuntimeError):
+    """Raised for 401/403 responses: an IAM/credentials problem, not a bad request."""
+
+    def __init__(self, status_code: int, body: str):
+        super().__init__(f"Vertex AI returned HTTP status {status_code}: {body}")
+        self.status_code = status_code
+
+AUTH_STATUS_CODES = {401, 403}
 
 def _log_retry_attempt(retry_state: RetryCallState) -> None:
     outcome = retry_state.outcome
@@ -62,12 +72,14 @@ class Gemini(LLM):
         )
         self.__retrying = AsyncRetrying(
             retry=retry_if_exception_type((VertexTransientError, httpx.TransportError)),
-            stop=stop_after_attempt(int(os.getenv("GEMINI_MAX_RETRIES", "5"))),
+            stop=stop_after_attempt(int(os.getenv("GEMINI_MAX_RETRIES", "5")))
+            | stop_after_delay(float(os.getenv("GEMINI_REQUEST_DEADLINE_SECONDS", "120"))),
             wait=wait_random_exponential(multiplier=1, max=float(os.getenv("GEMINI_BACKOFF_MAX_SECONDS", "20"))),
             reraise=True,
             before_sleep=_log_retry_attempt,
         )
         self.__token_lock = asyncio.Lock()
+        self.__semaphore = asyncio.Semaphore(self.parallelism())
 
     async def aclose(self) -> None:
         await self.__http_client.aclose()
@@ -93,94 +105,102 @@ class Gemini(LLM):
         return self.__credentials.token
 
     async def ask_generic_question(self, system_prompt: str, question: str, temperature: float) -> LLM.SimpleResponse:
-        token = await self._get_token()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
+        async with self.__semaphore:
+            token = await self._get_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
 
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": question}]
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": question}]
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": temperature
                 }
-            ],
-            "generationConfig": {
-                "temperature": temperature
-            }
-        }
-
-        if system_prompt:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_prompt}]
             }
 
-        attempt_count = 0
+            if system_prompt:
+                payload["systemInstruction"] = {
+                    "parts": [{"text": system_prompt}]
+                }
 
-        async def _send() -> httpx.Response:
-            nonlocal attempt_count
-            attempt_count += 1
+            attempt_count = 0
+
+            async def _send() -> httpx.Response:
+                nonlocal attempt_count
+                attempt_count += 1
+                try:
+                    response = await self.__http_client.post(self.__url, headers=headers, json=payload)
+                except httpx.TransportError as exc:
+                    setattr(exc, "attempt_number", attempt_count)
+                    raise
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    raise VertexTransientError(response.status_code, response.text)
+                if response.status_code in AUTH_STATUS_CODES:
+                    logger.error(
+                        "Vertex AI returned an auth/permission error %d - check IAM/credentials",
+                        response.status_code,
+                        extra={"status_code": response.status_code},
+                    )
+                    raise VertexAuthError(response.status_code, response.text)
+                if response.status_code != 200:
+                    logger.error(
+                        "Vertex AI returned non-retryable HTTP status %d",
+                        response.status_code,
+                        extra={"status_code": response.status_code},
+                    )
+                    raise RuntimeError(f"Vertex AI returned HTTP status {response.status_code}: {response.text}")
+                return response
+
             try:
-                response = await self.__http_client.post(self.__url, headers=headers, json=payload)
-            except httpx.TransportError as exc:
+                response: httpx.Response = await self.__retrying(_send)
+            except Exception as exc:
                 setattr(exc, "attempt_number", attempt_count)
-                raise
-            if response.status_code in RETRYABLE_STATUS_CODES:
-                raise VertexTransientError(response.status_code, response.text)
-            if response.status_code != 200:
                 logger.error(
-                    "Vertex AI returned non-retryable HTTP status %d",
-                    response.status_code,
-                    extra={"status_code": response.status_code},
+                    "Vertex AI request failed after %d attempt(s): %s",
+                    attempt_count,
+                    exc,
+                    extra={"attempt_number": attempt_count},
                 )
-                raise RuntimeError(f"Vertex AI returned HTTP status {response.status_code}: {response.text}")
-            return response
+                raise
 
-        try:
-            response: httpx.Response = await self.__retrying(_send)
-        except Exception as exc:
-            setattr(exc, "attempt_number", attempt_count)
-            logger.error(
-                "Vertex AI request failed after %d attempt(s): %s",
-                attempt_count,
-                exc,
-                extra={"attempt_number": attempt_count},
+            if attempt_count > 1:
+                logger.info(
+                    "Vertex AI request succeeded after retrying",
+                    extra={"attempt_number": attempt_count},
+                )
+
+            data = response.json()
+
+            candidates = data.get("candidates", [])
+            if not candidates:
+                answer = ""
+                finish_reason = data.get("promptFeedback", {}).get("blockReason")
+            else:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                answer = "".join(p.get("text", "") for p in parts)
+                finish_reason = candidates[0].get("finishReason")
+
+            if finish_reason not in (None, "STOP"):
+                logger.warning(
+                    "Non-standard finish_reason: %s",
+                    finish_reason,
+                    extra={"finish_reason": finish_reason},
+                )
+
+            usage = data.get("usageMetadata", {})
+            input_tokens = usage.get("promptTokenCount", 0)
+            output_tokens = usage.get("candidatesTokenCount", 0)
+
+            return LLM.SimpleResponse(
+                answer=answer,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                finish_reason=finish_reason,
+                attempt_number=attempt_count
             )
-            raise
-
-        if attempt_count > 1:
-            logger.info(
-                "Vertex AI request succeeded after retrying",
-                extra={"attempt_number": attempt_count},
-            )
-
-        data = response.json()
-
-        candidates = data.get("candidates", [])
-        if not candidates:
-            answer = ""
-            finish_reason = data.get("promptFeedback", {}).get("blockReason")
-        else:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            answer = "".join(p.get("text", "") for p in parts)
-            finish_reason = candidates[0].get("finishReason")
-
-        if finish_reason not in (None, "STOP"):
-            logger.warning(
-                "Non-standard finish_reason: %s",
-                finish_reason,
-                extra={"finish_reason": finish_reason},
-            )
-
-        usage = data.get("usageMetadata", {})
-        input_tokens = usage.get("promptTokenCount", 0)
-        output_tokens = usage.get("candidatesTokenCount", 0)
-
-        return LLM.SimpleResponse(
-            answer=answer,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            finish_reason=finish_reason,
-            attempt_number=attempt_count
-        )

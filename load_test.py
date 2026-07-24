@@ -236,7 +236,15 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
 
 async def main():
     configure_logging()
-    concurrency_levels = [1, 5, 10, 20, 30, 50, 75, 100]
+    concurrency_levels = [1, 5, 10, 20, 30, 50, 75, 100, 150, 200, 300]
+
+    # Gemini's own client-side semaphore defaults to GEMINI_PARALLELISM=100
+    # (added to cap unbounded self-inflicted concurrency in production),
+    # which would silently throttle this sweep below the levels tested here.
+    # Raise it to the sweep's max so the harness can actually probe past the
+    # library's default advisory limit and find where things really break.
+    os.environ.setdefault("GEMINI_PARALLELISM", str(max(concurrency_levels)))
+
     all_results = []
 
     async with Gemini() as gemini:
