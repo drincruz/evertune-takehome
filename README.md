@@ -29,7 +29,8 @@ uv run python load_test.py   # run the load test
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Model ID passed to the `generateContent` endpoint. |
 | `GEMINI_MAX_RETRIES` | No | `5` | Max attempts (including the first) for retryable errors (429/500/502/503/504, plus transport errors). |
 | `GEMINI_BACKOFF_MAX_SECONDS` | No | `20` | Ceiling for the jittered exponential backoff between retries. |
-| `GEMINI_PARALLELISM` | No | `100` | Suggested concurrency, returned by `Gemini.parallelism()`. Advisory only — the library doesn't enforce it; callers (like `load_test.py`) are responsible for actually limiting concurrency. |
+| `GEMINI_REQUEST_DEADLINE_SECONDS` | No | `120` | Overall deadline for a single `ask_generic_question` call, spanning all retry attempts (combined with `GEMINI_MAX_RETRIES` — whichever limit is hit first stops retrying). Bounds worst-case call latency even if retries alone would otherwise run much longer. |
+| `GEMINI_PARALLELISM` | No | `100` | Concurrency limit, returned by `Gemini.parallelism()` and enforced internally via a semaphore around `ask_generic_question`. Callers can still layer their own concurrency limiting on top (as `load_test.py` does), but no longer have to — the library self-limits by default. |
 
 ### Logging
 
@@ -45,6 +46,7 @@ uv run python load_test.py   # run the load test
 |---|---|---|---|
 | `TOGETHER_API_KEY` | Yes (for `Together`) | *(none)* | API key for Together AI. |
 | `TOGETHER_MODEL` | Yes (for `Together`) | *(none)* | Model ID to use. |
+| `TOGETHER_PARALLELISM` | No | `100` | Concurrency limit, returned by `Together.parallelism()` and enforced internally via a semaphore, same mechanism as `Gemini`. |
 
 # What to build
 
