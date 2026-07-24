@@ -47,6 +47,14 @@ def gemini(monkeypatch):
     monkeypatch.setenv("GEMINI_BACKOFF_MAX_SECONDS", "0.01")
     return Gemini()
 
+def test_gemini_requires_project_configuration(monkeypatch):
+    monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))
+    monkeypatch.delenv("VERTEX_PROJECT", raising=False)
+
+    with pytest.raises(ValueError, match="VERTEX_PROJECT"):
+        Gemini()
+
+
 def test_gemini_custom_parallelism(monkeypatch):
     monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (FakeCredentials(), None))
     monkeypatch.setenv("VERTEX_PROJECT", "test-project")
