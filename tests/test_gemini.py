@@ -181,6 +181,27 @@ async def test_finish_reason_prompt_blocked_no_candidates(gemini, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_aclose_closes_underlying_http_client(gemini, monkeypatch):
+    aclose = AsyncMock()
+    monkeypatch.setattr(gemini._Gemini__http_client, "aclose", aclose)
+
+    await gemini.aclose()
+
+    aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_context_manager_closes_underlying_http_client(gemini, monkeypatch):
+    aclose = AsyncMock()
+    monkeypatch.setattr(gemini._Gemini__http_client, "aclose", aclose)
+
+    async with gemini as g:
+        assert g is gemini
+
+    aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_token_refreshes_off_thread_when_invalid(monkeypatch):
     monkeypatch.setattr("llm.gemini.google.auth.default", lambda scopes: (RefreshableFakeCredentials(), None))
     monkeypatch.setenv("VERTEX_PROJECT", "test-project")

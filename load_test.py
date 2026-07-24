@@ -185,20 +185,20 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
 
 async def main():
     configure_logging()
-    gemini = Gemini()
     concurrency_levels = [1, 5, 10, 20, 30, 50, 75, 100]
     all_results = []
-    
-    for c in concurrency_levels:
-        reqs = max(20, c)
-        res = await run_scenario(gemini=gemini, concurrency=c, total_requests=reqs)
-        all_results.append(asdict(res))
-        
-        with open("load_test_results.json", "w") as f:
-            json.dump(all_results, f, indent=2)
-            
-        # 3 second cooldown between concurrency steps
-        await asyncio.sleep(3)
+
+    async with Gemini() as gemini:
+        for c in concurrency_levels:
+            reqs = max(20, c)
+            res = await run_scenario(gemini=gemini, concurrency=c, total_requests=reqs)
+            all_results.append(asdict(res))
+
+            with open("load_test_results.json", "w") as f:
+                json.dump(all_results, f, indent=2)
+
+            # 3 second cooldown between concurrency steps
+            await asyncio.sleep(3)
 
     print("=== All Load Test Scenarios Complete ===", flush=True)
 

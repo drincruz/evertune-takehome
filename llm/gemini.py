@@ -49,6 +49,15 @@ class Gemini(LLM):
         )
         self.__token_lock = asyncio.Lock()
 
+    async def aclose(self) -> None:
+        await self.__http_client.aclose()
+
+    async def __aenter__(self) -> "Gemini":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
+
     def parallelism(self) -> int:
         return int(os.getenv("GEMINI_PARALLELISM", "100"))
 
