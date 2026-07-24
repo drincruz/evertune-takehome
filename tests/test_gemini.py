@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import pytest
 import sys
 import os
@@ -55,7 +56,7 @@ def test_gemini_custom_parallelism(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_retries_on_429_then_succeeds(gemini, monkeypatch):
+async def test_retries_on_429_then_succeeds(gemini, monkeypatch, caplog):
     responses = [
         make_response(429, "quota exceeded"),
         make_response(200, {"candidates": [{"content": {"parts": [{"text": "Paris"}]}}]}),
@@ -63,30 +64,37 @@ async def test_retries_on_429_then_succeeds(gemini, monkeypatch):
     post = AsyncMock(side_effect=responses)
     monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
 
-    response = await gemini.ask_generic_question(
-        system_prompt="You are a helpful assistant.",
-        question="What is the capital of France?",
-        temperature=0.0,
-    )
-
-    assert response.answer == "Paris"
-    assert post.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_no_retry_on_non_retryable_status(gemini, monkeypatch):
-    post = AsyncMock(return_value=make_response(400, "bad request"))
-    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        await gemini.ask_generic_question(
+    with caplog.at_level(logging.WARNING, logger="llm.gemini"):
+        response = await gemini.ask_generic_question(
             system_prompt="You are a helpful assistant.",
             question="What is the capital of France?",
             temperature=0.0,
         )
 
+    assert response.answer == "Paris"
+    assert post.call_count == 2
+    assert any(record.levelno == logging.WARNING and "retrying" in record.message.lower() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_no_retry_on_non_retryable_status(gemini, monkeypatch, caplog):
+    post = AsyncMock(return_value=make_response(400, "bad request"))
+    monkeypatch.setattr(gemini._Gemini__http_client, "post", post)
+
+    with caplog.at_level(logging.ERROR, logger="llm.gemini"):
+        with pytest.raises(RuntimeError) as exc_info:
+            await gemini.ask_generic_question(
+                system_prompt="You are a helpful assistant.",
+                question="What is the capital of France?",
+                temperature=0.0,
+            )
+
     assert not isinstance(exc_info.value, VertexTransientError)
     assert post.call_count == 1
+    assert any(
+        record.levelno == logging.ERROR and getattr(record, "status_code", None) == 400
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

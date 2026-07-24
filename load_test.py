@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Any
 
 from llm import Gemini
+from llm.log_config import configure_logging
 
 # Sample realistic prompts of varying lengths
 SAMPLE_PROMPTS = [
@@ -183,6 +184,7 @@ async def run_scenario(gemini: Gemini, concurrency: int, total_requests: int) ->
     return res
 
 async def main():
+    configure_logging()
     gemini = Gemini()
     concurrency_levels = [1, 5, 10, 20, 30, 50, 75, 100]
     all_results = []

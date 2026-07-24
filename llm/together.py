@@ -1,8 +1,11 @@
+import logging
 import os
 from together import AsyncTogether
 from together.types.chat.completion_create_params import MessageChatCompletionUserMessageParam, MessageChatCompletionSystemMessageParam
 
 from llm import LLM
+
+logger = logging.getLogger(__name__)
 
 class Together(LLM):
     def __init__(self):
@@ -13,15 +16,19 @@ class Together(LLM):
         return 100
 
     async def ask_generic_question(self, system_prompt: str, question: str, temperature: float) -> LLM.SimpleResponse:
-        response = await self.__client.chat.completions.create(
-            model=self.__model,
-            messages=[
-                MessageChatCompletionUserMessageParam(role="user", content=question),
-                MessageChatCompletionSystemMessageParam(role="system", content=system_prompt),
-            ],
-            logprobs=1,
-            temperature=temperature,
-        )
+        try:
+            response = await self.__client.chat.completions.create(
+                model=self.__model,
+                messages=[
+                    MessageChatCompletionUserMessageParam(role="user", content=question),
+                    MessageChatCompletionSystemMessageParam(role="system", content=system_prompt),
+                ],
+                logprobs=1,
+                temperature=temperature,
+            )
+        except Exception:
+            logger.error("Together AI request failed", exc_info=True)
+            raise
 
         return LLM.SimpleResponse(
             answer=response.choices[0].message.content,
